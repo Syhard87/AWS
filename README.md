@@ -1,381 +1,658 @@
-EC04 - UrbanHub Park
-Guide de révision et de secours pour l'examen
-Partie 1 (implémentation) + Partie 2 (sécurisation)
-But du document
-Vous aider a refaire rapidement la P1, puis a attaquer la P2 avec une methode claire, des
-controles prioritaires, des captures utiles et des justifications techniques simples.
-Ce guide est volontairement pratique: ordre d'execution, verifications de fin d'etape, depannage
-rapide, et liste de preuves a produire.
-Document Usage conseille pendant l'examen
-P1 Suivre la checklist, ne pas improviser l'ordre,
-capturer les preuves au fur et a mesure.
-P2
-Partir d'un diagnostic par couches: IAM ->
-reseau -> exposition -> monitoring ->
-durcissement -> preuves.
-EC04 UrbanHub - Guide examen
-1. Partie 1 - Refaire UrbanHub rapidement et proprement
-Objectif. Monter une architecture AWS fonctionnelle dans eu-west-3: EC2 derriere un ALB,
-instances gerees par un Auto Scaling Group, base MariaDB sur RDS non exposee publiquement,
-routage correct, script d'installation lance au boot.
-Rappel des exigences du sujet P1
-• Region unique: eu-west-3.
-• EC2 derriere un Application Load Balancer avec un target group HTTP:80.
-• Auto Scaling Group: min 1, max 8, desired 1, cible CPU 50 %.
-• Base MariaDB sur Amazon RDS, non accessible directement depuis Internet.
-• VPC 10.0.0.0/16 avec 2 subnets publics (10.0.1.0/24, 10.0.2.0/24) et 2 subnets prives (10.0.3.0/24,
-10.0.4.0/24).
-• Subnets publics: auto-assign public IPv4 active.
-• Role EC2 avec AmazonRDSReadOnlyAccess pour le script d'installation.
-Ordre ideal d'execution P1 (a suivre strictement)
-Ordre Action Controle de fin
-1
-VPC + 4 subnets + DNS + IGW +
-route table publique
-Les 2 subnets publics ont
-0.0.0.0/0 vers l'IGW et autoassign public IPv4 active.
-2
-Security groups ALB / EC2 /
-RDS
-ALB:80 depuis Internet,
-EC2:80 depuis SG ALB, EC2:22
-depuis votre IP, RDS:3306
-depuis SG EC2.
-3
-RDS MariaDB + DB subnet
-group prive
-Public access = No, DB subnet
-group avec les 2 subnets
-prives.
-4 Role IAM EC2
-Role attache, policy
-AmazonRDSReadOnlyAccess
-visible.
-5 Launch Template AMI Ubuntu, key pair, SG EC2,
-role IAM, user data complet.
-6 Target group + health check HTTP:80, path /health.php,
-code 200.
-7 ALB
-Internet-facing, 2 subnets
-publics, listener HTTP:80 ->
-target group.
-8 ASG
-Min 1, desired 1, max 8, target
-tracking CPU 50 %, rattache au
-target group.
-EC04 UrbanHub - Guide examen
-P1 - Etape 1: reseau
-• Creer le VPC 10.0.0.0/16 et activer DNS resolution + DNS hostnames.
-• Creer les 4 subnets dans 2 AZ. Publics: 10.0.1.0/24 et 10.0.2.0/24. Prives: 10.0.3.0/24 et 10.0.4.0/24.
-• Creer une Internet Gateway et l'attacher au VPC.
-• Creer une route table publique avec 0.0.0.0/0 -> IGW, l'associer aux 2 subnets publics.
-• Laisser les subnets prives sur une table privee sans route Internet.
-• Verifier que les 2 subnets publics ont l'attribut auto-assign public IPv4 active.
-P1 - Etape 2: groupes de securite
-• SG ALB: inbound HTTP 80 depuis 0.0.0.0/0, outbound tout.
-• SG EC2: inbound HTTP 80 depuis SG ALB; inbound SSH 22 depuis votre IP; outbound tout.
-• SG RDS: inbound 3306 depuis SG EC2 uniquement.
-P1 - Etape 3: base RDS
-• Creer un DB subnet group avec les 2 subnets prives.
-• Creer MariaDB RDS dans ce DB subnet group.
-• Laisser Public access = No.
-• Conserver les identifiants qui seront reutilises dans le user data du Launch Template.
-P1 - Etape 4: role IAM EC2
-• Creer un role de confiance EC2.
-• Attacher AmazonRDSReadOnlyAccess.
-• Verifier que le role apparait ensuite sur l'instance lancee par l'ASG.
-P1 - Etape 5: Launch Template
-• Choisir Ubuntu Server.
-• Ajouter la key pair.
-• Ne pas fixer le subnet dans le template; laisser l'ASG choisir les subnets publics.
-• Associer le SG EC2 et le role IAM.
-• Coller le user data complet.
-User data type a conserver dans le Launch Template
+# EC04 — UrbanHub Park
+
+Guide de révision et d’exécution pour **EC04.1 (implémentation Cloud)** et **EC04.2 (sécurisation Cloud)**.
+
+> **Objectif** : avoir un support clair, lisible sur GitHub, rapide à consulter pendant l’examen.
+>
+> **Région imposée** : `eu-west-3`.
+
+---
+
+## Sommaire
+
+- [Vue d’ensemble](#vue-densemble)
+- [EC04.1 — Refaire rapidement la partie 1](#ec041--refaire-rapidement-la-partie-1)
+  - [Architecture attendue](#architecture-attendue)
+  - [Ordre d’exécution recommandé](#ordre-dexécution-recommandé)
+  - [Étapes détaillées](#étapes-détaillées)
+  - [Captures à rendre](#captures-à-rendre)
+  - [Pannes fréquentes](#pannes-fréquentes)
+- [EC04.2 — Sécuriser l’environnement Cloud](#ec042--sécuriser-lenvironnement-cloud)
+  - [Méthode de travail](#méthode-de-travail)
+  - [Diagnostic par couches](#diagnostic-par-couches)
+  - [Actions de sécurisation probables](#actions-de-sécurisation-probables)
+  - [Monitoring et alerting](#monitoring-et-alerting)
+  - [Justifications techniques prêtes à l’emploi](#justifications-techniques-prêtes-à-lemploi)
+  - [Preuves à capturer](#preuves-à-capturer)
+- [Checklist finale](#checklist-finale)
+- [Commandes utiles](#commandes-utiles)
+
+---
+
+## Vue d’ensemble
+
+### Partie 1 — Implémentation Cloud
+Construire une architecture AWS **fonctionnelle** pour UrbanHub :
+
+- application accessible via **ALB**,
+- instances **EC2** dans un **Auto Scaling Group**,
+- base **MariaDB sur Amazon RDS**,
+- architecture en **eu-west-3**,
+- routage et sécurité cohérents.
+
+### Partie 2 — Sécurisation Cloud
+Analyser, corriger et prévenir les vulnérabilités de l’environnement créé en P1 :
+
+- diagnostic des risques,
+- IAM / rôles / permissions / politiques,
+- bonnes pratiques provider,
+- monitoring / alerting,
+- durcissement,
+- preuves et justification technique.
+
+---
+
+# EC04.1 — Refaire rapidement la partie 1
+
+## Architecture attendue
+
+### Exigences clés
+
+- Région unique : `eu-west-3`
+- **ALB** devant les EC2
+- **Target Group** HTTP:80
+- **ASG** : min `1`, max `8`, desired `1`
+- **Target tracking CPU** : `50 %`
+- **RDS MariaDB** privé
+- Base **non accessible directement depuis Internet**
+- VPC : `10.0.0.0/16`
+- Subnets :
+  - public AZ1 : `10.0.1.0/24`
+  - public AZ2 : `10.0.2.0/24`
+  - privé AZ1 : `10.0.3.0/24`
+  - privé AZ2 : `10.0.4.0/24`
+- Subnets publics :
+  - auto-assign public IPv4 **activé**
+  - DNS public **activé**
+- Rôle EC2 avec **AmazonRDSReadOnlyAccess**
+
+---
+
+## Ordre d’exécution recommandé
+
+1. **VPC + subnets + DNS**
+2. **Internet Gateway + route table publique**
+3. **Security Groups**
+4. **RDS MariaDB + DB subnet group privé**
+5. **IAM Role EC2**
+6. **Launch Template**
+7. **Target Group**
+8. **ALB**
+9. **ASG**
+10. **Tests + captures**
+
+> **Conseil examen** : ne pas improviser l’ordre. Suivre la séquence ci-dessus.
+
+---
+
+## Étapes détaillées
+
+### 1) VPC et sous-réseaux
+
+Créer le VPC `10.0.0.0/16`.
+
+Activer :
+
+- `DNS resolution`
+- `DNS hostnames`
+
+Créer les 4 subnets :
+
+| Type | CIDR | AZ |
+|---|---:|---|
+| Public 1 | `10.0.1.0/24` | eu-west-3a |
+| Public 2 | `10.0.2.0/24` | eu-west-3b |
+| Privé 1 | `10.0.3.0/24` | eu-west-3a |
+| Privé 2 | `10.0.4.0/24` | eu-west-3b |
+
+Dans les **2 subnets publics** :
+
+- activer **Attribution automatique d’IPv4 publique**.
+
+---
+
+### 2) Internet Gateway et routage
+
+Créer une **Internet Gateway** et l’attacher au VPC.
+
+Créer une **route table publique** :
+
+- `10.0.0.0/16 -> local`
+- `0.0.0.0/0 -> Internet Gateway`
+
+Associer cette table aux **2 subnets publics**.
+
+Les subnets privés restent sans route Internet.
+
+---
+
+### 3) Security Groups
+
+#### SG ALB
+
+- **Inbound** : HTTP `80` depuis `0.0.0.0/0`
+- **Outbound** : tout
+
+#### SG EC2
+
+- **Inbound** : HTTP `80` depuis le **SG ALB**
+- **Inbound** : SSH `22` depuis **votre IP**
+- **Outbound** : tout
+
+#### SG RDS
+
+- **Inbound** : MariaDB / MySQL `3306` depuis le **SG EC2 uniquement**
+- **Outbound** : par défaut
+
+> Ne jamais mettre `3306` ouvert à `0.0.0.0/0`.
+
+---
+
+### 4) RDS MariaDB
+
+Créer une base **MariaDB** avec :
+
+- **DB identifier** : `urbanhub-db`
+- **username** : `admin`
+- **password** : `SuperPassword123!` *(ou autre, mais garder la cohérence avec le user data)*
+- **Public access** : `No`
+- **Security Group** : `urbanhub-sg-rds`
+
+Créer un **DB subnet group** avec **uniquement** :
+
+- `10.0.3.0/24`
+- `10.0.4.0/24`
+
+Attendre l’état **Available** avant de continuer.
+
+---
+
+### 5) IAM Role EC2
+
+Créer un rôle IAM pour **EC2**.
+
+Attacher la policy :
+
+- `AmazonRDSReadOnlyAccess`
+
+Nom conseillé :
+
+- `urbanhub-ec2-role`
+
+---
+
+### 6) Launch Template
+
+Choix principaux :
+
+- AMI Ubuntu Server
+- type `t3.micro`
+- key pair
+- SG : `urbanhub-sg-ec2`
+- IAM instance profile : `urbanhub-ec2-role`
+
+Ne pas figer :
+
+- le subnet
+- la zone de disponibilité
+
+Le choix des subnets sera fait par l’ASG.
+
+#### User data
+
+```bash
 #!/bin/bash
 export MASTER_DB_USER=admin
 export MASTER_DB_PASSWORD='SuperPassword123!'
 export AWS_REGION='eu-west-3'
-curl -fsSL https://raw.githubusercontent.com/dahut87/urban_1/refs/heads/main/
-install.sh | bash
-EC04 UrbanHub - Guide examen
-P1 - Etapes 6 a 8: ALB, Target Group, ASG
-• Target group: type Instance, HTTP:80, path /health.php, code 200.
-• ALB: internet-facing, 2 subnets publics, listener HTTP:80 qui transfere vers le target group.
-• ASG: min 1, desired 1, max 8, rattache au target group, 2 subnets publics.
-• Politique de scaling: target tracking sur Average CPU Utilization = 50 %.
-• Verifier que le target group n'est pas vide et qu'une cible passe en healthy.
-P1 - Pannes les plus frequentes et correction express
-Symptome Cause probable Correction
-502 / 503 sur le DNS ALB Target group vide ou instance
-unhealthy
-Verifier que l'ASG est bien
-rattache au target group, puis
-attendre une cible healthy.
-Target group: 0 cible ASG non rattache ou aucune
-instance
-Reattacher l'ASG au target
-group, desired=1, verifier les
-subnets publics.
-Pas de SSH Pas de key pair ou pas d'IP
-publique
-Nouvelle version du Launch
-Template avec key pair,
-verifier auto-assign public
-IPv4 sur les subnets publics.
-RDS inaccessible SG RDS faux ou RDS publique /
-mauvais subnet group
-Laisser Public access = No, SG
-RDS ouvert a 3306 seulement
-depuis SG EC2.
-Health check KO Apache / PHP / user data pas
-termine ou path faux
-Verifier cloud-init logs,
-apache2, et path /health.php.
-Captures minimales a rendre pour la P1
-• Application UrbanHub fonctionnelle via le DNS de l'ALB.
-• Commande CloudShell qui affiche le DNS de l'ALB + resultat.
-• systemctl status apache2 sur une instance EC2.
-• En bonus: target group healthy, ASG min/desired/max, RDS Public access = No.
-EC04 UrbanHub - Guide examen
-2. Partie 2 - Securisation de l'environnement Cloud
-Ce que dit l'enonce. Analyser, corriger et prevenir les vulnerabilites de l'environnement cree en
-P1. Contenu attendu: diagnostic des risques Cloud, gestion IAM, bonnes pratiques provider,
-monitoring/alerting, durcissement. Livrable: environnement securise + justification technique +
-elements de preuve.
-Objectif reel de la P2
-• Montrer que vous savez identifier ce qui expose l'infrastructure inutilement.
-• Corriger les permissions trop larges, les ouvertures reseau inutiles et les ressources mal
-exposees.
-• Ajouter un minimum de supervision utile et defendable.
-• Expliquer pourquoi chaque correction reduit le risque sans casser la P1.
-Methode P2 en 7 passes (ordre conseille)
-Pass Question a se poser Action attendue
-1. Exposition Qu'est-ce qui est visible depuis
-Internet ?
-Verifier ALB public, EC2
-limitee, RDS non publique,
-SSH restreint.
-2. IAM Qui a le droit de faire quoi ?
-Examiner les roles, policies et
-supprimer le trop large si
-possible.
-3. Reseau Les flux sont-ils limites au
-necessaire ?
-Revoir les SG et, si utile, les
-route tables.
-4. Donnees / metadata Qu'est-ce qui peut fuiter ? Verifier IMDSv2, acces
-metadata, base non publique.
-5. Monitoring Comment detecter une panne
-ou un abus ?
-Ajouter des alarmes
-CloudWatch simples et utiles.
-6. Durcissement
-Quels reglages renforcent la
-posture sans casser le
-service ?
-Tighten SSH, eventuellement
-HTTPS/443 si demande, traces
-et logs.
-7. Preuves
-Comment prouver chaque
-mesure ?
-Captures ecran, tableaux
-avant/apres, justification
-technique courte.
-Matrice de risques UrbanHub P2
-Ressource Risque Correction prioritaire Preuve utile
-ALB
-Exposition web
-normale mais
-surveillee trop
-faiblement
-Verifier listener,
-target group sain,
-eventuellement
-CloudWatch sur
-UnHealthyHostCount
-Capture ALB +
-alarmes
-EC2 SSH trop ouvert / SSH seulement depuis Capture SG EC2
-EC04 UrbanHub - Guide examen
-acces direct web
-inutile
-votre IP; HTTP
-seulement depuis SG
-ALB
-RDS
-Base publiquement
-accessible ou flux trop
-larges
-Public access = No; SG
-3306 seulement
-depuis SG EC2
-Capture RDS + SG RDS
-IAM role EC2 Permissions trop
-larges
-Conserver seulement
-le necessaire au
-fonctionnement
-Capture role + policies
-Subnets
-EC2 sans IP publique
-ou mauvaise
-exposition
-Public subnets bien
-configures; DB en
-private subnets
-Capture subnets +
-route tables
-Metadonnees EC2
-Abus IMDSv1 ou
-metadata trop
-permissives
-Exiger IMDSv2 Capture options
-metadata
-Supervision Panne non detectee a
-temps
-Alarmes CloudWatch
-simples sur CPU /
-status / target health
-Capture alarmes
-P2 - Axe 1: IAM et permissions
-• Commencer par l'inventaire des roles utilises: role EC2, eventuelles policies inline, comptes IAM
-manipules pendant le TP.
-• Question cle: la permission est-elle strictement utile au service ? Si non, la resserrer.
-• Pour UrbanHub, le point defendable est de garder le role EC2 necessaire au script d'installation
-et d'eviter d'ajouter des droits larges sans justification.
-• En justification: le principe du moindre privilege reduit l'impact d'une compromission
-d'instance.
-P2 - Axe 2: reseau et exposition
-• ALB public: normal, car l'application doit etre accessible depuis Internet.
-• EC2: ne pas exposer HTTP 80 au monde; n'autoriser le port 80 qu'a partir du SG de l'ALB.
-• SSH: n'ouvrir qu'a votre IP, et si l'examen le permet, supprimer ou resserrer la regle apres debug.
-• RDS: Public access = No et SG 3306 seulement depuis le SG EC2.
-• En justification: reduction de la surface d'attaque et segmentation des flux par couche.
-P2 - Axe 3: monitoring et alerting
-• Ajouter au minimum des alarmes CloudWatch simples, lisibles et defendables.
-• Exemples defendables: CPU EC2 elevee, StatusCheckFailed pour l'instance, UnHealthyHostCount
-pour le target group, CPU ou FreeStorageSpace pour RDS si disponible.
-EC04 UrbanHub - Guide examen
-• Le but n'est pas d'en mettre 20, mais de montrer que vous savez detecter indisponibilite et
-degradation.
-• En justification: meilleure detection des incidents et reactivite operationnelle.
-P2 - Axe 4: durcissement
-• Verifier que l'instance exige IMDSv2. C'est une mesure simple et robuste contre certains abus de
-metadata.
-• Verifier que la base reste privee et que les flux sont minimaux.
-• Verifier les options de lancement et les composants critiques: key pair, SG, role IAM, user data
-maitrise.
-• Si l'exercice vous pousse vers le HTTPS, vous pouvez expliquer qu'un vrai durcissement web
-passe par TLS sur l'ALB avec certificat ACM; ne le faites que si le sujet l'oriente clairement.
-Alarmes CloudWatch defendables pour la P2
-Alarme Seuil simple Interet Preuve a garder
-EC2 CPUUtilization >= 80 % pendant 5
-min
-Detecter surcharge ou
-runaway process
-Capture de l'alarme +
-etat OK/ALARM
-EC2
-StatusCheckFailed >= 1
-Detecter incident
-machine /
-hyperviseur / reseau
-Capture alarme
-ALB
-UnHealthyHostCount >= 1 Detecter perte de cible
-saine
-Capture metrique ou
-alarme
-RDS CPUUtilization >= 80 % Detecter saturation
-DB
-Capture alarme
-RDS FreeStorageSpace Sous un seuil prudent
-Detecter risque de
-panne par manque
-d'espace
-Capture alarme
-Note - Adaptez le jeu d'alarmes a ce que la console vous laisse creer rapidement. Le bon reflexe est
-de privilegier 3 a 5 alarmes pertinentes plutot qu'une collection confuse.
-Justifications techniques courtes a reutiliser
-Mesure Formulation simple et defendable
-SSH restreint a mon IP Je reduis la surface d'attaque en limitant
-l'administration a une source connue.
-EC2 accessible seulement via ALB Je force le passage par la couche de repartition
-et j'evite une exposition directe des instances.
-RDS non publique
-Je protege la base en la gardant dans des
-subnets prives et en filtrant le flux 3306 au
-strict necessaire.
-Role IAM limite J'applique le moindre privilege pour limiter
-l'impact d'un compte ou d'une instance
-EC04 UrbanHub - Guide examen
-compromise.
-IMDSv2 required Je renforce l'acces aux metadonnees d'instance
-en imposant le token IMDSv2.
-Alarmes CloudWatch
-Je rends la plateforme plus exploitable en
-detectant plus vite une panne ou une
-surcharge.
-P2 - Check-list de verification finale
-□ RDS: Public access = No.
-□ SG EC2: port 80 autorise seulement depuis SG ALB.
-□ SG EC2: port 22 limite a votre IP ou retire apres validation si le sujet le permet.
-□ SG RDS: 3306 seulement depuis SG EC2.
-□ Role IAM verifie et policies defendables.
-□ IMDSv2 required sur l'instance si possible.
-□ Au moins 3 alarmes CloudWatch pertinentes creees.
-□ Target group avec cible saine, ALB fonctionnel, application toujours accessible apres
-durcissement.
-EC04 UrbanHub - Guide examen
-3. Preuves, commandes et depannage rapide
-Captures P2 a privilegier
-Theme Capture utile
-IAM Role EC2 + policies visibles
-SG EC2 Regles 80 depuis SG ALB et 22 depuis votre IP
-SG RDS Regle 3306 depuis SG EC2 uniquement
-RDS Public access = No
-Monitoring Liste des alarmes CloudWatch creees
-IMDS Options metadata avec IMDSv2 required si
-active
-Service final Application toujours fonctionnelle apres
-durcissement
-Commandes utiles pendant l'examen
-Usage Commande
-CloudShell - Recuperer le DNS ALB
-aws elbv2 describe-load-balancers --names
-urbanhub-alb --query
-"LoadBalancers[0].DNSName" --output text
-SSH - Etat Apache sudo systemctl status apache2
-SSH - Logs cloud-init sudo tail -n 100 /var/log/cloud-initoutput.log
-SSH - Test local app curl -I http://localhost/
-SSH - Test health check curl -I http://localhost/health.php
-Diagnostic express si ca casse apres un durcissement
-Symptome Reflexe
-ALB ne repond plus Verifier target group, SG EC2, health check
-/health.php, apache2.
-SSH perdu Verifier IP source du port 22, IP publique, key
-pair, instance remplacee par l'ASG.
-Base inaccessible Verifier SG RDS, endpoint DB, Public access,
-role IAM si le script s'appuie dessus.
-Application en erreur mais cible healthy Regarder logs Apache / PHP et tester localhost
-sur l'instance.
-Apres changement ASG, plus de cible Verifier que l'ASG est toujours rattache au bon
-target group.
-4. References AWS officielles a connaitre
-• EC2 user data - execution de scripts au lancement.
-EC04 UrbanHub - Guide examen
-• Application Load Balancer target group health checks.
-• EC2 Auto Scaling target tracking policies.
-• CloudWatch alarms - alarmes CPU / statut.
-• Security groups for EC2 / VPC security groups.
-• Subnet auto-assign public IPv4.
-• RDS public vs private access et DB subnet groups.
-• IMDSv2 pour les metadonnees d'instance.
-Dernier conseil pour l'examen
-• En P2, ne cherchez pas a tout faire. Cherchez a montrer une methode, des corrections
-pertinentes et des preuves propres.
-• Chaque modification doit pouvoir se justifier en une phrase: quel risque je reduis ? pourquoi
-ma correction est adaptee ? comment je prouve qu'elle est en place ?
-• Ne cassez pas la P1 en voulant sur-securiser. Le bon rendu P2 est un environnement encore
-fonctionnel, mais mieux protege et mieux surveille.
+curl -fsSL https://raw.githubusercontent.com/dahut87/urban_1/refs/heads/main/install.sh | bash
+```
+
+---
+
+### 7) Target Group
+
+Créer un Target Group :
+
+- Type : `Instances`
+- Protocole : `HTTP`
+- Port : `80`
+- VPC : votre VPC
+
+#### Health check
+
+- Protocol : `HTTP`
+- Path : `/health.php`
+- Success code : `200`
+
+---
+
+### 8) ALB
+
+Créer un **Application Load Balancer** :
+
+- Scheme : `internet-facing`
+- Listener : `HTTP:80`
+- Subnets : **2 subnets publics**
+- SG : `urbanhub-sg-alb`
+- Action par défaut : forward vers `urbanhub-tg`
+
+---
+
+### 9) Auto Scaling Group
+
+Créer un ASG :
+
+- Launch Template : celui créé plus haut
+- VPC : votre VPC
+- Subnets : **2 subnets publics**
+- Attach to existing load balancer / target group : `urbanhub-tg`
+
+#### Capacité
+
+- desired : `1`
+- min : `1`
+- max : `8`
+
+#### Scaling policy
+
+- type : **Target tracking**
+- metric : **Average CPU Utilization**
+- target value : `50`
+
+#### Health checks
+
+- activer les checks **EC2** + **ELB**
+- grace period : `300` secondes
+
+---
+
+## Captures à rendre
+
+### Obligatoires
+
+- capture de l’application UrbanHub fonctionnelle,
+- capture de la commande CloudShell qui affiche le DNS public de l’ALB + résultat,
+- capture de `systemctl status apache2`.
+
+### Bonus très utiles
+
+- ALB + DNS,
+- Target Group avec cible **healthy**,
+- RDS avec **Public access = No**,
+- ASG avec min / desired / max,
+- scaling CPU `50 %`,
+- subnets publics / privés,
+- SG EC2 / SG RDS.
+
+---
+
+## Pannes fréquentes
+
+| Symptôme | Cause probable | Correction rapide |
+|---|---|---|
+| `502 Bad Gateway` sur ALB | target group vide ou instance non healthy | vérifier ASG, target group, health check |
+| target group = `0 cible` | ASG non attaché au TG | rattacher `urbanhub-tg` à l’ASG |
+| pas de SSH | pas de key pair ou pas d’IP publique | corriger le Launch Template / vérifier auto-assign public IPv4 |
+| pas d’IP publique | subnet public mal configuré | activer auto-assign public IPv4 sur le subnet public |
+| RDS inaccessible | SG RDS trop strict ou mauvais subnet group | vérifier port `3306` depuis SG EC2 et DB subnet group privé |
+| script user data échoue | rôle IAM absent ou mauvais mot de passe DB | vérifier rôle EC2 + user data + cohérence des credentials |
+| EC2 répond en direct impossible | normal si SG EC2 accepte seulement HTTP depuis SG ALB | tester via le **DNS de l’ALB**, pas via l’EC2 directe |
+
+---
+
+# EC04.2 — Sécuriser l’environnement Cloud
+
+## Méthode de travail
+
+### Logique à suivre
+
+Faire la P2 **par passes** :
+
+1. **Diagnostic**
+2. **Corrections IAM**
+3. **Corrections réseau / exposition**
+4. **Durcissement des ressources**
+5. **Monitoring / alerting**
+6. **Captures et justification**
+
+> Ne pas partir dans tous les sens. Toujours raisonner par couches.
+
+---
+
+## Diagnostic par couches
+
+## 1) IAM
+
+Questions à se poser :
+
+- les rôles IAM sont-ils **minimaux** ou trop larges ?
+- qui peut faire quoi ?
+- y a-t-il des permissions inutiles ?
+- la policy EC2 est-elle justifiée ?
+
+### Attendu défendable
+
+- garder **seulement** ce qui est nécessaire au fonctionnement ;
+- éviter les permissions admin globales ;
+- documenter pourquoi telle policy reste nécessaire.
+
+---
+
+## 2) Réseau
+
+Questions à se poser :
+
+- quelles ressources sont exposées à Internet ?
+- est-ce voulu ?
+- le trafic suit-il le bon chemin ?
+
+### Chemin correct
+
+**Internet -> ALB -> EC2 -> RDS**
+
+### Ce qui doit être vrai
+
+- ALB exposé publiquement : **oui**
+- EC2 exposées directement en HTTP depuis Internet : **non**
+- RDS exposée publiquement : **non**
+- SSH limité à votre IP : **oui**
+
+---
+
+## 3) Exposition
+
+Vérifier :
+
+- subnets publics = uniquement pour ALB + EC2 si nécessaire,
+- base dans les subnets privés,
+- SG EC2 ne laisse pas entrer `80` depuis `0.0.0.0/0`,
+- SG RDS n’ouvre jamais `3306` au monde.
+
+---
+
+## 4) Monitoring
+
+Questions à traiter :
+
+- comment détecter une panne ?
+- comment détecter une saturation ?
+- comment prouver que l’infra est suivie ?
+
+---
+
+## 5) Durcissement
+
+Questions à se poser :
+
+- qu’est-ce qu’on peut fermer ?
+- qu’est-ce qu’on peut restreindre ?
+- qu’est-ce qu’on peut surveiller ?
+- qu’est-ce qu’on peut justifier ?
+
+---
+
+## Actions de sécurisation probables
+
+## IAM
+
+### À faire
+
+- vérifier le rôle EC2 ;
+- garder uniquement la policy nécessaire ;
+- éviter toute policy trop large si elle existe ;
+- vérifier qu’aucun utilisateur humain n’a des droits excessifs inutiles.
+
+### Justification prête
+
+> Le rôle IAM de l’instance est limité à la lecture RDS nécessaire au script d’installation. Cela permet de respecter le principe du moindre privilège tout en conservant le fonctionnement applicatif.
+
+---
+
+## Security Groups
+
+### À garder / corriger
+
+#### SG ALB
+
+- HTTP 80 depuis Internet : **oui**
+
+#### SG EC2
+
+- HTTP 80 depuis **SG ALB uniquement** : **oui**
+- SSH 22 depuis **votre IP uniquement** : **oui**
+- supprimer toute ouverture large inutile
+
+#### SG RDS
+
+- 3306 depuis **SG EC2 uniquement** : **oui**
+- aucun accès Internet direct : **oui**
+
+### Justification prête
+
+> L’exposition réseau a été réduite au strict nécessaire. L’ALB est le seul point d’entrée public. Les instances EC2 ne reçoivent le trafic applicatif que depuis l’ALB, et la base RDS n’est accessible que depuis les EC2 de l’application.
+
+---
+
+## Subnets et exposition
+
+### À vérifier
+
+- ALB dans subnets publics,
+- RDS dans subnets privés,
+- route Internet seulement là où c’est justifié,
+- EC2 avec IP publique uniquement si nécessaire à l’administration / à l’exercice.
+
+### Justification prête
+
+> La séparation public / privé réduit la surface d’attaque. Les composants exposés sont limités au load balancer, tandis que la base de données reste isolée dans des sous-réseaux privés.
+
+---
+
+## IMDSv2
+
+Si possible, garder **IMDSv2 requis** sur l’instance.
+
+### Justification prête
+
+> L’usage d’IMDSv2 renforce la protection des métadonnées d’instance en limitant les abus liés à l’accès aux credentials temporaires via SSRF ou accès indirect aux métadonnées.
+
+---
+
+## Monitoring et alerting
+
+## Minimum crédible à mettre en place
+
+### CloudWatch Alarms
+
+Créer des alarmes défendables comme :
+
+- **EC2 CPUUtilization > 70 %**
+- **ALB UnHealthyHostCount >= 1**
+- **StatusCheckFailed_Instance >= 1**
+- **RDS CPUUtilization > 70 %**
+- **RDS FreeStorageSpace trop bas**
+
+### Pourquoi c’est bien
+
+- détecte saturation,
+- détecte panne de cible,
+- détecte incident sur l’instance,
+- détecte pression sur la base.
+
+### Justification prête
+
+> Le monitoring a été renforcé pour détecter les dégradations de disponibilité, les hôtes non sains derrière l’ALB, les incidents EC2 et les tensions sur la base RDS. Cela améliore la réactivité opérationnelle et la fiabilité globale de l’environnement.
+
+---
+
+## Logs et preuves
+
+À capturer si possible :
+
+- cible **healthy** dans le Target Group,
+- alarme CloudWatch créée,
+- metrics EC2 / ALB / RDS,
+- `systemctl status apache2`,
+- page UrbanHub fonctionnelle,
+- SG EC2 / SG RDS.
+
+---
+
+## Matrice simple de risques
+
+| Risque | Impact | Probabilité | Mesure de réduction |
+|---|---:|---:|---|
+| Exposition directe de la base | Très fort | Moyen | RDS privée + SG restrictif |
+| Exposition directe des EC2 | Fort | Moyen | trafic HTTP uniquement depuis ALB |
+| Permissions IAM trop larges | Fort | Moyen | moindre privilège |
+| Incident non détecté | Fort | Élevé | CloudWatch alarms |
+| Saturation applicative | Moyen | Moyen | ASG + target tracking CPU |
+| Panne de cible ALB | Fort | Moyen | health checks + alarme UnHealthyHostCount |
+
+---
+
+## Justifications techniques prêtes à l’emploi
+
+### Pourquoi ALB + Target Group ?
+
+> L’ALB centralise l’exposition HTTP, répartit la charge entre les instances et permet de contrôler leur santé avec des health checks. Cela améliore la disponibilité et évite d’exposer directement chaque instance au trafic Internet.
+
+### Pourquoi ASG ?
+
+> L’Auto Scaling Group permet de maintenir au moins une instance disponible et d’absorber une hausse de charge via une politique de scaling basée sur la CPU. Cela répond aux objectifs de résilience et d’élasticité.
+
+### Pourquoi RDS privée ?
+
+> La base de données contient les données métier et ne doit pas être exposée publiquement. Son placement dans des subnets privés, combiné à un SG restrictif, réduit fortement la surface d’attaque.
+
+### Pourquoi SSH restreint à une IP ?
+
+> Restreindre l’administration SSH à une seule adresse source réduit le risque d’exposition large de l’accès d’administration sur Internet.
+
+### Pourquoi CloudWatch ?
+
+> Le monitoring et les alarmes permettent de passer d’une infrastructure simplement fonctionnelle à une infrastructure administrable, observable et plus robuste en production.
+
+---
+
+## Preuves à capturer
+
+### IAM
+
+- rôle EC2,
+- policy attachée,
+- absence de droits inutiles visibles.
+
+### Réseau
+
+- SG ALB,
+- SG EC2,
+- SG RDS,
+- subnets publics / privés,
+- route table publique.
+
+### Disponibilité
+
+- cible healthy,
+- ALB,
+- ASG,
+- politique de scaling.
+
+### Monitoring
+
+- alarmes CloudWatch,
+- graphiques metrics EC2 / ALB / RDS.
+
+### Application
+
+- page UrbanHub,
+- `systemctl status apache2`.
+
+---
+
+# Checklist finale
+
+## Avant rendu P1
+
+- [ ] VPC correct
+- [ ] 2 subnets publics + 2 privés
+- [ ] auto-assign public IPv4 activé sur les subnets publics
+- [ ] IGW + route publique OK
+- [ ] SG ALB / EC2 / RDS corrects
+- [ ] RDS privée
+- [ ] rôle EC2 OK
+- [ ] Launch Template complet
+- [ ] Target Group OK
+- [ ] ALB OK
+- [ ] ASG OK
+- [ ] cible healthy
+- [ ] UrbanHub fonctionne
+- [ ] captures obligatoires faites
+
+## Avant rendu P2
+
+- [ ] diagnostic des risques rédigé
+- [ ] IAM justifié
+- [ ] exposition réseau justifiée
+- [ ] RDS privée prouvée
+- [ ] SSH restreint à votre IP
+- [ ] monitoring / alerting visible
+- [ ] preuves capturées
+- [ ] arguments prêts pour justifier chaque choix
+
+---
+
+# Commandes utiles
+
+## DNS de l’ALB
+
+```bash
+aws elbv2 describe-load-balancers --names urbanhub-alb --query "LoadBalancers[0].DNSName" --output text
+```
+
+## Apache
+
+```bash
+sudo systemctl status apache2
+```
+
+## Logs du script d’initialisation
+
+```bash
+sudo tail -n 100 /var/log/cloud-init-output.log
+```
+
+## Test local depuis l’EC2
+
+```bash
+curl -I http://localhost/
+curl -I http://localhost/health.php
+```
+
+## SSH
+
+```bash
+chmod 400 urbanhub-key2.pem
+ssh -i "urbanhub-key2.pem" ubuntu@IP_PUBLIQUE
+```
+
+---
+
+## Dernier conseil
+
+Pendant l’examen :
+
+- **P1** : suivre l’ordre, ne pas improviser, capturer les preuves au fur et à mesure.
+- **P2** : raisonner par couches : **IAM -> réseau -> exposition -> monitoring -> durcissement -> preuves**.
+
